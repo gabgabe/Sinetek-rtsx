@@ -217,7 +217,7 @@ IOReturn SDDisk::reportRemovability(bool *isRemovable)
 IOReturn SDDisk::reportWriteProtection(bool *isWriteProtected)
 {
 	UTL_DEBUG(0, "START");
-	*isWriteProtected = true; // XXX
+	*isWriteProtected = false; // XXX
 	return kIOReturnSuccess;
 }
 
@@ -349,6 +349,87 @@ out:
 	delete args;
 }
 
+
+
+
+
+void write_task_impl_(void *_args)
+{
+	BioArgs *args = (BioArgs *) _args;
+	IOByteCount actualByteCount;
+	int error = 0;
+	
+	UTL_CHK_PTR(args,);
+	UTL_CHK_PTR(args->buffer,);
+	UTL_CHK_PTR(args->that,);
+	UTL_CHK_PTR(args->that->provider_,);
+	UTL_CHK_PTR(args->that->provider_->sc_fn0,);
+	UTL_DEBUG(0, "START (block = %u nblks = %u blksize = %u)",
+		  static_cast<unsigned>(args->block),
+		  static_cast<unsigned>(args->nblks),
+		  args->that->blk_size_);
+	
+	printf("read_task_impl_  sz %llu\n", args->nblks * args->that->blk_size_);
+	printf("sf->csd.sector_size %d\n", args->that->provider_->sc_fn0->csd.sector_size);
+	
+	
+	actualByteCount = args->nblks * args->that->blk_size_;
+
+	{ auto map = args->buffer->map();
+		// this is for 32-bit?? u_char * buf = (u_char *) map->getVirtualAddress();
+		u_char *buf = (u_char *) map->getAddress();
+		
+		for (UInt64 b = 0; b < args->nblks; ++b)
+		{
+			//		sdmmc_mem_single_read_block(args->that->provider_->sc_fn0,
+			//						    0, buf + b * 512, 512);
+			sdmmc_mem_write_block(args->that->provider_->sc_fn0,
+						  0, buf, 512);
+			//		sdmmc_go_idle_state(args->that->provider_);
+		}
+		map->release(); } // need to release map
+	
+	for (UInt64 b = 0; b < args->nblks; b++)
+	{
+		printf("would: %lld  last block %d\n", args->block + b, args->that->num_blocks_ - 1);
+		//unsigned int would = args->block + b;
+		auto map = args->buffer->map();
+		u_char *buf = (u_char *) map->getAddress();
+
+		auto would = args->block + b;
+		//if ( would > 60751872 ) would = 60751871;
+		error = sdmmc_mem_write_block(args->that->provider_->sc_fn0,
+						  static_cast<int>(would), buf + b * 512, 512);
+
+		if (error) {
+			if (args->completion.action) {
+				(args->completion.action)(args->completion.target, args->completion.parameter,
+							  kIOReturnIOError, 0);
+			} else {
+				UTL_ERR("No completion action!");
+			}
+			goto out;
+		}
+	}
+	
+	if (args->completion.action) {
+		(args->completion.action)(args->completion.target, args->completion.parameter,
+					  kIOReturnSuccess, actualByteCount);
+	} else {
+		UTL_ERR("No completion action!");
+	}
+	
+out:
+	if (error) {
+		UTL_ERR("END (error = %d)", error);
+	} else {
+		UTL_DEBUG(0, "END (error = %d)", error);
+	}
+	delete args;
+}
+
+
+
 /**
  * Start an async read or write operation.
  * @param buffer
@@ -380,9 +461,10 @@ IOReturn SDDisk::doAsyncReadWrite(IOMemoryDescriptor *buffer,
 	if ((direction != kIODirectionIn) && (direction != kIODirectionOut))
 		return kIOReturnBadArgument;
 	
-	if (direction == kIODirectionOut)
-		return kIOReturnNotWritable; // read-only driver for now...
-	
+//	if (direction == kIODirectionOut)
+//		return kIOReturnNotWritable; // read-only driver for now...
+
+
 	if ((block + nblks) > num_blocks_)
 		return kIOReturnBadArgument;
 	
@@ -407,15 +489,21 @@ IOReturn SDDisk::doAsyncReadWrite(IOMemoryDescriptor *buffer,
 	if (completion != nullptr)
 		bioargs->completion = *completion;
 	bioargs->that = this;
-	
+
 #if RTSX_FIX_TASK_BUG
-	UTL_DEBUG(0, "Allocating read task...");
+	UTL_DEBUG(0, "Allocating task...");
 	auto newTask = UTL_MALLOC(sdmmc_task); // will be deleted after processed
 	if (!newTask) return kIOReturnNoMemory;
+		if (direction == kIODirectionIn){
 	sdmmc_init_task(newTask, read_task_impl_, bioargs);
 	sdmmc_add_task(provider_, newTask);
+		}
+		if (direction == kIODirectionOut){
+	sdmmc_init_task(newTask, write_task_impl_, bioargs);
+	sdmmc_add_task(provider_, newTask);
+		}
 #else
-	sdmmc_init_task(&provider_->read_task_, read_task_impl_, bioargs);
+	sdmmc_init_task(&provider_->, read_task_impl_, bioargs);
 	sdmmc_add_task(provider_, &provider_->read_task_);
 #endif
 	

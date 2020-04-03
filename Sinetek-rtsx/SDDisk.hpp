@@ -8,7 +8,8 @@ class SDDisk : public IOBlockStorageDevice
 	OSDeclareDefaultStructors(SDDisk)
 	
 	friend void read_task_impl_(void *arg);
-	
+	friend void write_task_impl_(void *arg);
+
 private:
 	rtsx_softc *		provider_;
 	IOLock *			util_lock_;
